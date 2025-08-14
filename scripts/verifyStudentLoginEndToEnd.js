@@ -28,7 +28,7 @@ const verifyEndToEndLogin = async () => {
     
     console.log(`📝 Testing login for ${randomStudents.length} random students:\n`);
     
-    const serverUrl = 'http://localhost:5000'; // Adjust if server is on different port
+    const serverUrl = 'https://outingbackend.onrender.com'; // Adjust if server is on different port
     
     for (let i = 0; i < randomStudents.length; i++) {
       const student = randomStudents[i];
@@ -115,8 +115,8 @@ const main = async () => {
     
     console.log('\n✅ All end-to-end tests completed!');
     console.log('\n🌐 System is ready for use:');
-    console.log('   - Server: http://localhost:5000');
-    console.log('   - Client: http://localhost:5174');
+    console.log('   - Server: https://outingbackend.onrender.com');
+    console.log('   - Client: https://outingapplication.vercel.app');
     console.log('   - Students can login with roll number as username and password');
     
     process.exit(0);
