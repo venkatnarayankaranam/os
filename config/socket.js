@@ -6,20 +6,27 @@ let io;
 const init = (server) => {
   io = new Server(server, {
     cors: {
-      origin: ['https://outingapplication.vercel.app/', process.env.FRONTEND_URL, 'http://localhost:5173', 'http://localhost:3000', 'http://localhost:8080'],
+      origin: [
+        'https://outingapplication.vercel.app',
+        process.env.FRONTEND_URL, // optional from env
+        'http://localhost:5173',
+        'http://localhost:3000',
+        'http://localhost:8080'
+      ].filter(Boolean), // remove undefined/null
       methods: ['GET', 'POST'],
       credentials: true
     },
-    path: '/socket.io' // Explicitly set socket path
+    path: '/socket.io'
   });
 
-  // Debug middleware for all connections
+  // Debug every connection attempt (before auth)
   io.use((socket, next) => {
     console.log('[Socket] Connection attempt:', {
       id: socket.id,
       namespace: socket.nsp.name,
       auth: socket.handshake.auth,
-      headers: socket.handshake.headers
+      headers: socket.handshake.headers,
+      origin: socket.handshake.headers.origin
     });
     next();
   });
@@ -27,12 +34,15 @@ const init = (server) => {
   // Authentication middleware
   const authenticateSocket = (socket, next) => {
     try {
-      const token = socket.handshake.auth.token;
+      const token = socket.handshake.auth?.token;
       if (!token) {
         return next(new Error('Authentication error: No token provided'));
       }
 
-      const decoded = jwt.verify(token, process.env.JWT_SECRET || 'OutingApplication@2026');
+      const decoded = jwt.verify(
+        token,
+        process.env.JWT_SECRET || 'OutingApplication@2026'
+      );
       socket.user = decoded;
       next();
     } catch (error) {
@@ -41,7 +51,7 @@ const init = (server) => {
     }
   };
 
-  // Debug middleware for namespace connections
+  // Debug helper for namespaces
   const debugNamespace = (namespace) => {
     namespace.use((socket, next) => {
       console.log(`[Socket][${namespace.name}] Namespace connection:`, {
@@ -52,19 +62,28 @@ const init = (server) => {
     });
   };
 
-  // Floor Incharge namespace
+  // Namespaces
   const floorInchargeNamespace = io.of('/floor-incharge');
   const hostelInchargeNamespace = io.of('/hostel-incharge');
   const wardenNamespace = io.of('/warden');
   const studentNamespace = io.of('/student');
+  const securityNamespace = io.of('/security');
 
-  [floorInchargeNamespace, hostelInchargeNamespace, wardenNamespace, studentNamespace].forEach(namespace => {
+  const namespaces = [
+    floorInchargeNamespace,
+    hostelInchargeNamespace,
+    wardenNamespace,
+    studentNamespace,
+    securityNamespace
+  ];
+
+  namespaces.forEach(namespace => {
     namespace.use(authenticateSocket);
     debugNamespace(namespace);
-    
+
     namespace.on('connection', (socket) => {
       console.log(`Connected to ${socket.nsp.name}:`, socket.id);
-      
+
       socket.on('join-room', (data) => {
         if (data.room) {
           socket.join(data.room);
@@ -78,17 +97,12 @@ const init = (server) => {
     });
   });
 
-  // Security namespace
-  const securityNamespace = io.of('/security');
-  securityNamespace.use(authenticateSocket);
-  debugNamespace(securityNamespace);
-  
+  // Special handling for /security namespace events
   securityNamespace.on('connection', (socket) => {
     console.log('Security connected:', socket.id);
-    
+
     socket.on('verify-qr', async (data) => {
       try {
-        // Handle QR verification events
         const decodedData = JSON.parse(data.qrData);
         socket.emit('verification-result', {
           success: true,
