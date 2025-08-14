@@ -3,6 +3,7 @@ const User = require('../models/User');
 const Notification = require('../models/Notification');
 const socketIO = require('../config/socket');
 const QRCode = require('qrcode');
+const { sendParentApprovalSMSForOuting } = require('../services/smsService');
 
 exports.handleApproval = async (req, res) => {
   try {
@@ -138,6 +139,19 @@ exports.handleApproval = async (req, res) => {
         };
         request.qrCode.outgoing.data = await QRCode.toDataURL(JSON.stringify(qrPayload));
         request.qrCode.outgoing.generatedAt = new Date();
+
+        // Try sending SMS to parent on final approval
+        try {
+          if (!request.studentId?.name) {
+            await request.populate('studentId', 'name rollNumber parentPhoneNumber');
+          }
+          const smsResult = await sendParentApprovalSMSForOuting(request);
+          if (smsResult?.error) {
+            console.warn('Parent SMS send failed (workflow):', smsResult.error);
+          }
+        } catch (smsError) {
+          console.error('Error sending parent SMS (workflow):', smsError.message);
+        }
       } else {
         // Rejected by warden
         request.approvalFlags.warden.isApproved = false;
@@ -264,7 +278,8 @@ exports.getDashboardData = async (req, res) => {
         break;
       case 'warden':
         query = { 
-          currentLevel: 'warden'
+          currentLevel: 'warden',
+          hostelBlock: { $in: assignedBlocks }
         };
         break;
     }

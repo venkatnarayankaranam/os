@@ -47,18 +47,23 @@ const auth = async (req, res, next) => {
       } 
 
       if (decoded.role === 'warden') {
+        // Get warden user from database to get their actual assignedBlocks
+        const wardenUser = await User.findById(decoded.id);
+        if (!wardenUser) {
+          throw new Error('Warden user not found');
+        }
+        
         req.user = {
           id: decoded.id,
           email: decoded.email,
           role: decoded.role,
           isAdmin: true,
-          assignedBlocks: ['D-Block', 'E-Block']
+          assignedBlocks: wardenUser.assignedBlocks || []
         };
         console.log('Warden auth:', {
           email: req.user.email,
           role: req.user.role,
           assignedBlocks: req.user.assignedBlocks
-
         });
         return next();
       }

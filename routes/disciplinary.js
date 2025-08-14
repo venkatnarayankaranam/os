@@ -4,6 +4,7 @@ const { auth, checkRole } = require('../middleware/auth');
 const DisciplinaryAction = require('../models/DisciplinaryAction');
 const Student = require('../models/Student');
 const Notification = require('../models/Notification');
+const { sendDisciplinaryActionSMS } = require('../services/smsService');
 
 // Create manual disciplinary action (hostel-incharge)
 router.post('/', auth, checkRole(['hostel-incharge', 'warden', 'admin']), async (req, res) => {
@@ -40,6 +41,18 @@ router.post('/', auth, checkRole(['hostel-incharge', 'warden', 'admin']), async 
       });
     } catch (e) {
       // best effort: do not block
+    }
+
+    // Send SMS to parent about disciplinary action
+    try {
+      const smsResult = await sendDisciplinaryActionSMS(action);
+      if (smsResult?.error) {
+        console.warn('Disciplinary action SMS failed:', smsResult.error);
+      } else if (smsResult?.success) {
+        console.log('Disciplinary action SMS sent successfully');
+      }
+    } catch (smsError) {
+      console.error('Error sending disciplinary action SMS:', smsError.message);
     }
 
     res.json({ success: true, data: action });

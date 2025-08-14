@@ -142,7 +142,7 @@ router.get('/floor-incharge/requests', auth, checkRole(['floor-incharge']), asyn
     }).populate({
       path: 'studentId',
       model: 'Student',
-      select: 'name rollNumber roomNumber'
+      select: 'name rollNumber'
     });
 
     console.log(`📋 Found ${requests.length} pending requests for floor incharge`);
@@ -265,9 +265,16 @@ router.get('/hostel-incharge/requests', auth, checkRole(['hostel-incharge']), as
 // Warden Dashboard Routes
 router.get('/warden/requests', auth, checkRole(['warden']), async (req, res) => {
   try {
+    const assignedBlocks = Array.isArray(req.user.assignedBlocks) && req.user.assignedBlocks.length > 0
+      ? req.user.assignedBlocks
+      : (req.user.assignedBlock ? [req.user.assignedBlock] : (req.user.hostelBlock ? [req.user.hostelBlock] : []));
+
+    const blockVariants = assignedBlocks.flatMap(b => (b === 'W-Block' ? ['W-Block', 'Womens-Block'] : (b === 'Womens-Block' ? ['Womens-Block', 'W-Block'] : [b])));
+
     const [requests, students, outingsToday] = await Promise.all([
       OutingRequest.find({
         currentLevel: 'warden',
+        hostelBlock: { $in: blockVariants },
         'approvalFlags.hostelIncharge.isApproved': true
       }).populate({
         path: 'studentId',
@@ -275,9 +282,10 @@ router.get('/warden/requests', auth, checkRole(['warden']), async (req, res) => 
         select: 'name rollNumber hostelBlock floor roomNumber'
       }),
       
-      require('../models/Student').countDocuments({}),
+      require('../models/Student').countDocuments({ hostelBlock: { $in: blockVariants } }),
       
       OutingRequest.countDocuments({
+        hostelBlock: { $in: blockVariants },
         status: 'approved',
         outingDate: {
           $gte: new Date().setHours(0, 0, 0, 0),
@@ -292,13 +300,16 @@ router.get('/warden/requests', auth, checkRole(['warden']), async (req, res) => 
       outingsToday,
       pending: await OutingRequest.countDocuments({
         currentLevel: 'warden',
+        hostelBlock: { $in: blockVariants },
         'approvalFlags.hostelIncharge.isApproved': true
       }),
       approved: await OutingRequest.countDocuments({
+        hostelBlock: { $in: blockVariants },
         status: 'approved',
         currentLevel: 'completed'
       }),
       denied: await OutingRequest.countDocuments({
+        hostelBlock: { $in: blockVariants },
         status: 'denied',
         currentLevel: 'completed'
       })

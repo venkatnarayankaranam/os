@@ -5,6 +5,7 @@ const OutingRequest = require('../models/OutingRequest');
 const User = require('../models/User');
 const { auth, checkRole } = require('../middleware/auth');
 const { generatePDF, generateGateActivityPDF } = require('../services/pdfService');
+const { sendCheckoutSMS, sendCheckinSMS, sendSuspiciousActivitySMS } = require('../services/smsService');
 
 // Gate Dashboard - Get current activity and statistics
 router.get('/dashboard', auth, checkRole(['security', 'admin', 'warden', 'gate']), async (req, res) => {
@@ -520,6 +521,32 @@ router.post('/manual-checkin', auth, checkRole(['security', 'admin', 'warden', '
       throw new Error(`Database save failed: ${saveError.message}`);
     }
 
+    // Send SMS to parent about check-in
+    try {
+      const smsResult = await sendCheckinSMS(outgoingRequest, 'outing', false);
+      if (smsResult?.error) {
+        console.warn('Check-in SMS failed:', smsResult.error);
+      } else if (smsResult?.success) {
+        console.log('Check-in SMS sent successfully');
+      }
+    } catch (smsError) {
+      console.error('Error sending check-in SMS:', smsError.message);
+    }
+
+    // If suspicious, send additional SMS about suspicious activity
+    if (isSuspicious) {
+      try {
+        const suspiciousSMSResult = await sendSuspiciousActivitySMS(outgoingRequest, newActivity);
+        if (suspiciousSMSResult?.error) {
+          console.warn('Suspicious activity SMS failed:', suspiciousSMSResult.error);
+        } else if (suspiciousSMSResult?.success) {
+          console.log('Suspicious activity SMS sent successfully');
+        }
+      } catch (suspiciousSmsError) {
+        console.error('Error sending suspicious activity SMS:', suspiciousSmsError.message);
+      }
+    }
+
     console.log('✅ Manual check-in successful for:', student.name, 'at', checkInTime.toISOString(), isSuspicious ? '(SUSPICIOUS ACTIVITY)' : '');
 
     // If suspicious, create a disciplinary action and notify student
@@ -845,6 +872,27 @@ router.post('/scan-debug', async (req, res) => {
       }
       
       await request.save();
+      
+      // Send SMS to parent based on scan type
+      try {
+        if (scanType === 'OUT') {
+          const smsResult = await sendCheckoutSMS(request, 'home-permission');
+          if (smsResult?.error) {
+            console.warn('Home permission checkout SMS failed:', smsResult.error);
+          } else if (smsResult?.success) {
+            console.log('Home permission checkout SMS sent successfully');
+          }
+        } else if (scanType === 'IN') {
+          const smsResult = await sendCheckinSMS(request, 'home-permission', false);
+          if (smsResult?.error) {
+            console.warn('Home permission checkin SMS failed:', smsResult.error);
+          } else if (smsResult?.success) {
+            console.log('Home permission checkin SMS sent successfully');
+          }
+        }
+      } catch (smsError) {
+        console.error('Error sending home permission SMS:', smsError.message);
+      }
       
       scanResult = {
         type: scanType,
@@ -1373,6 +1421,27 @@ router.post('/scan', auth, checkRole(['security', 'admin', 'warden', 'gate']), a
       }
       
       await request.save();
+      
+      // Send SMS to parent based on scan type
+      try {
+        if (scanType === 'OUT') {
+          const smsResult = await sendCheckoutSMS(request, 'home-permission');
+          if (smsResult?.error) {
+            console.warn('Home permission checkout SMS failed:', smsResult.error);
+          } else if (smsResult?.success) {
+            console.log('Home permission checkout SMS sent successfully');
+          }
+        } else if (scanType === 'IN') {
+          const smsResult = await sendCheckinSMS(request, 'home-permission', false);
+          if (smsResult?.error) {
+            console.warn('Home permission checkin SMS failed:', smsResult.error);
+          } else if (smsResult?.success) {
+            console.log('Home permission checkin SMS sent successfully');
+          }
+        }
+      } catch (smsError) {
+        console.error('Error sending home permission SMS:', smsError.message);
+      }
       
       scanResult = {
         type: scanType,

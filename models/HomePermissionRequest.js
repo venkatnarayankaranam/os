@@ -172,13 +172,20 @@ homePermissionRequestSchema.statics.findForHostelIncharge = function(userId, hos
   }).populate('studentId').sort({ createdAt: -1 });
 };
 
-homePermissionRequestSchema.statics.findForWarden = function(userId) {
-  return this.find({
+homePermissionRequestSchema.statics.findForWarden = function(userId, assignedBlocks = []) {
+  const query = {
     $or: [
       { currentLevel: 'warden' },
       { 'approvalFlow.userId': userId }
     ]
-  }).populate('studentId').sort({ createdAt: -1 });
+  };
+  
+  // Filter by assigned blocks if provided
+  if (assignedBlocks && assignedBlocks.length > 0) {
+    query.hostelBlock = { $in: assignedBlocks };
+  }
+  
+  return this.find(query).populate('studentId').sort({ createdAt: -1 });
 };
 
 homePermissionRequestSchema.statics.findByQRId = async function(qrId) {

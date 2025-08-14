@@ -9,6 +9,7 @@ const PDFDocument = require('pdfkit');
 const { generatePDF } = require('../services/pdfService');
 const QRCode = require('qrcode');
 const { getIO } = require('../config/socket');
+const { sendParentApprovalSMSForHomePermission, sendFloorInchargeApprovalSMS } = require('../services/smsService');
 
 // Submit new home permission request
 router.post('/requests/submit', auth, async (req, res) => {
@@ -251,8 +252,15 @@ router.get('/dashboard/hostel-incharge', auth, async (req, res) => {
 // Warden Dashboard
 router.get('/dashboard/warden', auth, async (req, res) => {
   try {
-    // Get all requests that reached warden level or approved by this warden
+    const assignedBlocks = Array.isArray(req.user.assignedBlocks) && req.user.assignedBlocks.length > 0
+      ? req.user.assignedBlocks
+      : (req.user.assignedBlock ? [req.user.assignedBlock] : (req.user.hostelBlock ? [req.user.hostelBlock] : []));
+
+    const blockVariants = assignedBlocks.flatMap(b => (b === 'W-Block' ? ['W-Block', 'Womens-Block'] : (b === 'Womens-Block' ? ['Womens-Block', 'W-Block'] : [b])));
+
+    // Get all requests that reached warden level or approved by this warden, filtered by assigned blocks
     const requests = await HomePermissionRequest.find({
+      hostelBlock: { $in: blockVariants },
       $or: [
         { currentLevel: 'warden' },
         { 'approvalFlow.approvedBy': req.user.email }
@@ -342,6 +350,18 @@ router.post('/:requestId/approve', auth, async (req, res) => {
     // Save the request (pre-save middleware will handle status updates)
     await request.save();
 
+    // Send SMS to parent when floor incharge approves
+    try {
+      const smsResult = await sendFloorInchargeApprovalSMS(request, 'home-permission');
+      if (smsResult?.error) {
+        console.warn('Floor incharge approval SMS failed (home-permission):', smsResult.error);
+      } else if (smsResult?.success) {
+        console.log('Floor incharge approval SMS sent successfully (home-permission)');
+      }
+    } catch (smsError) {
+      console.error('Error sending floor incharge approval SMS (home-permission):', smsError.message);
+    }
+
     // Generate QR codes if fully approved
     if (request.status === 'approved' && request.currentLevel === 'completed') {
       try {
@@ -430,6 +450,23 @@ router.post('/:requestId/approve', auth, async (req, res) => {
     } catch (notifError) {
       console.error('Failed to create notification:', notifError);
       // Don't fail the approval process if notification fails
+    }
+
+    // Attempt to send SMS to parent upon final approval
+    try {
+      if (request.status === 'approved' && request.currentLevel === 'completed') {
+        if (!request.studentId?.name) {
+          await request.populate('studentId', 'name rollNumber parentPhoneNumber');
+        }
+        const smsResult = await sendParentApprovalSMSForHomePermission(request);
+        if (smsResult?.error) {
+          console.warn('Parent SMS send failed (home-permission):', smsResult.error);
+        } else if (smsResult?.success) {
+          console.log('Final approval SMS sent successfully (home-permission)');
+        }
+      }
+    } catch (smsError) {
+      console.error('Error sending parent SMS (home-permission):', smsError.message);
     }
 
     // Emit socket event for real-time updates

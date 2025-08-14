@@ -72,7 +72,7 @@ const userSchema = new mongoose.Schema({
   assignedBlocks: [{
     type: String,
     required: function() {
-      return this.role === 'hostel-incharge';
+      return ['hostel-incharge', 'warden'].includes(this.role);
     }
   }],
   assignedFloor: [{

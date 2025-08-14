@@ -12,6 +12,7 @@ const PDFDocument = require('pdfkit');
 const { generatePDF } = require('../services/pdfService');
 const QRCode = require('qrcode');
 const { getIO } = require('../config/socket');
+const { sendParentApprovalSMSForOuting, sendFloorInchargeApprovalSMS, sendCheckoutSMS, sendCheckinSMS } = require('../services/smsService');
 
 // Get students under floor incharge
 router.get('/floor-incharge/students/:email', auth, async (req, res) => {
@@ -240,8 +241,15 @@ router.get('/approved-students/warden', auth, checkRole(['warden']), async (req,
   try {
     console.log('🔍 Fetching approved students for warden...');
     
+    const assignedBlocks = Array.isArray(req.user.assignedBlocks) && req.user.assignedBlocks.length > 0
+      ? req.user.assignedBlocks
+      : (req.user.assignedBlock ? [req.user.assignedBlock] : (req.user.hostelBlock ? [req.user.hostelBlock] : []));
+
+    const blockVariants = assignedBlocks.flatMap(b => (b === 'W-Block' ? ['W-Block', 'Womens-Block'] : (b === 'Womens-Block' ? ['Womens-Block', 'W-Block'] : [b])));
+    
     const approvedRequests = await OutingRequest.find({
       status: 'approved',
+      hostelBlock: { $in: blockVariants },
       'approvalFlags.warden.isApproved': true
     })
     .populate({
@@ -251,7 +259,7 @@ router.get('/approved-students/warden', auth, checkRole(['warden']), async (req,
     })
     .sort({ outingDate: -1 });
 
-    console.log(`📊 Found ${approvedRequests.length} approved requests for warden`);
+    console.log(`📊 Found ${approvedRequests.length} approved requests for warden in blocks: ${blockVariants.join(', ')}`);
 
     // Filter out requests where student population failed and map the data
     const validRequests = approvedRequests.filter(request => request.studentId);
@@ -439,6 +447,20 @@ router.patch('/floor-incharge/request/:requestId/:action', auth, checkRole(['flo
         referenceId: request._id
       });
     } catch (e) {}
+
+    // Send SMS to parent when floor incharge approves
+    if (action === 'approve') {
+      try {
+        const smsResult = await sendFloorInchargeApprovalSMS(request, 'outing');
+        if (smsResult?.error) {
+          console.warn('Floor incharge approval SMS failed:', smsResult.error);
+        } else if (smsResult?.success) {
+          console.log('Floor incharge approval SMS sent successfully');
+        }
+      } catch (smsError) {
+        console.error('Error sending floor incharge approval SMS:', smsError.message);
+      }
+    }
 
     res.json({
       success: true,
@@ -671,13 +693,39 @@ router.post('/:requestId/approve', auth, async (req, res) => {
 router.get('/pending/:level', auth, checkRole(['floor-incharge', 'hostel-incharge', 'warden']), async (req, res) => {
   try {
     const { level } = req.params;
-    const requests = await OutingRequest.find({
-      currentLevel: level,
-      hostelBlock: req.user.assignedBlock,
-      ...(level === 'floor-incharge' && { floor: req.user.assignedFloor })
-    })
-    .populate('studentId', 'name email rollNumber phoneNumber hostelBlock roomNumber')
-    .populate('approvalFlow.approvedBy', 'name email role');
+    
+    // Build query based on user role
+    let query = { currentLevel: level };
+    
+    if (req.user.role === 'warden') {
+      // For wardens, use assignedBlocks
+      const assignedBlocks = Array.isArray(req.user.assignedBlocks) && req.user.assignedBlocks.length > 0
+        ? req.user.assignedBlocks
+        : [];
+      
+      if (assignedBlocks.length > 0) {
+        query.hostelBlock = { $in: assignedBlocks };
+      }
+    } else if (req.user.role === 'floor-incharge') {
+      // For floor incharge, use assignedBlock and assignedFloor
+      query.hostelBlock = req.user.assignedBlock || req.user.hostelBlock;
+      if (req.user.assignedFloor) {
+        query.floor = { $in: req.user.assignedFloor };
+      }
+    } else if (req.user.role === 'hostel-incharge') {
+      // For hostel incharge, use assignedBlocks
+      const assignedBlocks = Array.isArray(req.user.assignedBlocks) && req.user.assignedBlocks.length > 0
+        ? req.user.assignedBlocks
+        : [];
+      
+      if (assignedBlocks.length > 0) {
+        query.hostelBlock = { $in: assignedBlocks };
+      }
+    }
+    
+    const requests = await OutingRequest.find(query)
+      .populate('studentId', 'name email rollNumber phoneNumber hostelBlock roomNumber')
+      .populate('approvalFlow.approvedBy', 'name email role');
 
     res.json({ success: true, requests });
   } catch (error) {
@@ -934,7 +982,8 @@ router.get('/dashboard/warden', auth, checkRole(['warden']), async (req, res) =>
 
     // Get additional stats
     const [totalHostels, totalStudents, outingsToday] = await Promise.all([
-      OutingRequest.distinct('hostelBlock').countDocuments(),
+      // Only count hostel blocks that this warden is assigned to
+      assignedBlocks.length,
       Student.countDocuments({ hostelBlock: { $in: blockVariants } }),
       OutingRequest.countDocuments({
         hostelBlock: { $in: blockVariants },
@@ -1058,6 +1107,22 @@ router.patch('/warden/approve/:requestId', auth, checkRole(['warden']), async (r
     } catch (notifError) {
       console.error('Failed to create notification:', notifError);
       // Don't fail the approval process if notification fails
+    }
+
+    // Attempt to send SMS to parent upon final approval
+    try {
+      // Ensure student is populated for composing message
+      if (!request.studentId?.name) {
+        await request.populate('studentId', 'name rollNumber parentPhoneNumber');
+      }
+      const smsResult = await sendParentApprovalSMSForOuting(request);
+      if (smsResult?.error) {
+        console.warn('Parent SMS send failed:', smsResult.error);
+      } else if (smsResult?.success) {
+        console.log('Final approval SMS sent successfully');
+      }
+    } catch (smsError) {
+      console.error('Error sending parent SMS:', smsError.message);
     }
 
     // Emit socket event if needed
@@ -1409,6 +1474,23 @@ router.patch('/hostel-incharge/request/:requestId/:action', auth, checkRole(['ho
       });
     }
 
+    // If this became final approval (emergency shortcut), notify parent via SMS
+    try {
+      if (savedRequest.status === 'approved' && savedRequest.currentLevel === 'completed') {
+        if (!savedRequest.studentId?.name) {
+          await savedRequest.populate('studentId', 'name rollNumber parentPhoneNumber');
+        }
+        const smsResult = await sendParentApprovalSMSForOuting(savedRequest);
+        if (smsResult?.error) {
+          console.warn('Parent SMS send failed (HI emergency):', smsResult.error);
+        } else if (smsResult?.success) {
+          console.log('Emergency approval SMS sent successfully');
+        }
+      }
+    } catch (smsError) {
+      console.error('Error sending parent SMS (HI emergency):', smsError.message);
+    }
+
     res.json({
       success: true,
       message: `Request ${action}d successfully`,
@@ -1485,8 +1567,22 @@ router.get('/approved-requests/pdf', auth, checkRole(['floor-incharge', 'hostel-
         hostelBlock: req.user.assignedBlock,
         floor: { $in: req.user.assignedFloor }
       };
+    } else if (req.user.role === 'warden') {
+      // Warden can only see approved requests from their assigned blocks
+      const assignedBlocks = Array.isArray(req.user.assignedBlocks) && req.user.assignedBlocks.length > 0
+        ? req.user.assignedBlocks
+        : (req.user.assignedBlock ? [req.user.assignedBlock] : (req.user.hostelBlock ? [req.user.hostelBlock] : []));
+      
+      if (assignedBlocks.length > 0) {
+        query = {
+          status: 'approved',
+          hostelBlock: { $in: assignedBlocks }
+        };
+      } else {
+        query = { status: 'approved' };
+      }
     } else {
-      // Warden can see all approved requests
+      // Default case - can see all approved requests
       query = { status: 'approved' };
     }
 
