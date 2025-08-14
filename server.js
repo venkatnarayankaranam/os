@@ -8,7 +8,15 @@ const socketConfig = require('./config/socket');
 
 const app = express();
 const server = http.createServer(app);
-const io = socketConfig.init(server);
+
+const allowedOrigins = [
+  process.env.FRONTEND_URL,
+  'https://outingapplication.vercel.app',
+  'http://localhost:5173',
+  'http://localhost:5174'
+].filter(Boolean);
+
+const io = socketConfig.init(server, allowedOrigins);
 
 const connectWithRetry = (retries = 5, delay = 5000) => {
   if (!process.env.MONGODB_URI) {
