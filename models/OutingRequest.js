@@ -329,8 +329,10 @@ outingRequestSchema.pre('save', function(next) {
     if (this.isNew) {
       if (this.category === 'emergency') {
         this.currentLevel = 'hostel-incharge';
+        console.log('🚨 Emergency outing request - setting currentLevel to hostel-incharge:', this._id);
       } else {
         this.currentLevel = 'floor-incharge';
+        console.log('📋 Normal outing request - setting currentLevel to floor-incharge:', this._id);
       }
     }
 
@@ -338,9 +340,18 @@ outingRequestSchema.pre('save', function(next) {
       // Get latest approval
       const latestApproval = this.approvalFlow[this.approvalFlow.length - 1];
       
+      console.log('🔄 Processing outing approval flow update:', {
+        requestId: this._id,
+        latestApproval,
+        currentLevel: this.currentLevel,
+        category: this.category
+      });
+      
       // Update approvalFlags and currentLevel/status based on approval
       if (latestApproval.status === 'approved') {
         const level = String(latestApproval.level);
+        console.log('✅ Processing approved outing request, level:', level);
+        
         switch (level) {
           case '1':
           case 'floor-incharge':
@@ -349,6 +360,7 @@ outingRequestSchema.pre('save', function(next) {
             this.approvalFlags.floorIncharge.remarks = latestApproval.remarks || '';
             if (this.currentLevel === 'floor-incharge') {
               this.currentLevel = 'hostel-incharge';
+              console.log('🔄 Updated outing currentLevel from floor-incharge to hostel-incharge for request:', this._id);
             }
             break;
           case '2':
@@ -361,8 +373,10 @@ outingRequestSchema.pre('save', function(next) {
               if (this.category === 'emergency') {
                 this.currentLevel = 'completed';
                 this.status = 'approved';
+                console.log('✅ Emergency outing request completed by hostel incharge for request:', this._id);
               } else {
                 this.currentLevel = 'warden';
+                console.log('🔄 Updated outing currentLevel from hostel-incharge to warden for request:', this._id);
               }
             }
             break;
@@ -374,13 +388,25 @@ outingRequestSchema.pre('save', function(next) {
             if (this.currentLevel === 'warden') {
               this.currentLevel = 'completed';
               this.status = 'approved';
+              console.log('✅ Outing request completed by warden for request:', this._id);
             }
+            break;
+          default:
+            console.warn('⚠️ Unknown outing approval level:', level, 'for request:', this._id);
             break;
         }
       }
+      
+      console.log('📊 Final outing state after approval processing:', {
+        requestId: this._id,
+        currentLevel: this.currentLevel,
+        status: this.status,
+        approvalFlags: this.approvalFlags
+      });
     }
     next();
   } catch (error) {
+    console.error('❌ Error in OutingRequest pre-save middleware:', error);
     next(error);
   }
 });

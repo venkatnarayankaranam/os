@@ -406,9 +406,9 @@ router.patch('/floor-incharge/request/:requestId/:action', auth, checkRole(['flo
       remarks: comments
     };
 
-    // Add to approval flow
+    // Add to approval flow with proper level mapping
     request.approvalFlow.push({
-      level: 'floor-incharge',
+      level: '1', // Use numeric level to match the pre-save middleware logic
       status: action === 'approve' ? 'approved' : 'denied',
       timestamp: new Date(),
       remarks: comments,
@@ -419,14 +419,42 @@ router.patch('/floor-incharge/request/:requestId/:action', auth, checkRole(['flo
       }
     });
 
+    // Explicitly mark approvalFlow as modified to ensure pre-save middleware is triggered
+    request.markModified('approvalFlow');
+
+    console.log('📝 Adding outing approval to flow:', {
+      requestId: request._id,
+      approvalEntry: {
+        level: '1',
+        status: action === 'approve' ? 'approved' : 'denied',
+        timestamp: new Date(),
+        remarks: comments,
+        approvedBy: req.user.email,
+        approverInfo: {
+          email: req.user.email,
+          role: 'floor-incharge'
+        }
+      },
+      currentLevel: request.currentLevel,
+      status: request.status
+    });
+
     if (action === 'approve') {
-      request.moveToNextLevel();
+      // Let the pre-save middleware handle the level transition
+      // request.moveToNextLevel(); // Remove this line to let pre-save handle it
     } else {
       request.status = 'denied';
       request.currentLevel = 'completed';
     }
 
     const savedRequest = await request.save();
+
+    console.log('💾 Outing request saved after approval:', {
+      requestId: savedRequest._id,
+      currentLevel: savedRequest.currentLevel,
+      status: savedRequest.status,
+      approvalFlags: savedRequest.approvalFlags
+    });
 
     // Emit socket event
     const io = req.app.get('socketio');
@@ -903,7 +931,8 @@ router.get('/dashboard/hostel-incharge', auth, checkRole(['hostel-incharge']), a
     const stats = {
       pending: await OutingRequest.countDocuments({
         hostelBlock: { $in: assignedBlocks },
-        currentLevel: 'hostel-incharge'
+        currentLevel: 'hostel-incharge',
+        status: 'pending'
       }),
       approved: await OutingRequest.countDocuments({
         hostelBlock: { $in: assignedBlocks },

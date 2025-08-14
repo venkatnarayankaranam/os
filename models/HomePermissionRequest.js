@@ -322,9 +322,18 @@ homePermissionRequestSchema.pre('save', function(next) {
       // Get latest approval
       const latestApproval = this.approvalFlow[this.approvalFlow.length - 1];
       
+      console.log('🔄 Processing approval flow update:', {
+        requestId: this._id,
+        latestApproval,
+        currentLevel: this.currentLevel,
+        category: this.category
+      });
+      
       // Update approvalFlags and currentLevel/status based on approval
       if (latestApproval.status === 'approved') {
         const level = String(latestApproval.level);
+        console.log('✅ Processing approved request, level:', level);
+        
         switch (level) {
           case '1':
           case 'floor-incharge':
@@ -333,6 +342,7 @@ homePermissionRequestSchema.pre('save', function(next) {
             this.approvalFlags.floorIncharge.remarks = latestApproval.remarks || '';
             if (this.currentLevel === 'floor-incharge') {
               this.currentLevel = 'hostel-incharge';
+              console.log('🔄 Updated currentLevel from floor-incharge to hostel-incharge for request:', this._id);
             }
             break;
           case '2':
@@ -345,8 +355,10 @@ homePermissionRequestSchema.pre('save', function(next) {
               if (this.category === 'emergency') {
                 this.currentLevel = 'completed';
                 this.status = 'approved';
+                console.log('✅ Emergency request completed by hostel incharge for request:', this._id);
               } else {
                 this.currentLevel = 'warden';
+                console.log('🔄 Updated currentLevel from hostel-incharge to warden for request:', this._id);
               }
             }
             break;
@@ -358,13 +370,25 @@ homePermissionRequestSchema.pre('save', function(next) {
             if (this.currentLevel === 'warden') {
               this.currentLevel = 'completed';
               this.status = 'approved';
+              console.log('✅ Request completed by warden for request:', this._id);
             }
+            break;
+          default:
+            console.warn('⚠️ Unknown approval level:', level, 'for request:', this._id);
             break;
         }
       }
+      
+      console.log('📊 Final state after approval processing:', {
+        requestId: this._id,
+        currentLevel: this.currentLevel,
+        status: this.status,
+        approvalFlags: this.approvalFlags
+      });
     }
     next();
   } catch (error) {
+    console.error('❌ Error in HomePermissionRequest pre-save middleware:', error);
     next(error);
   }
 });

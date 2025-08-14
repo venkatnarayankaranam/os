@@ -158,6 +158,12 @@ router.get('/dashboard/floor-incharge', auth, async (req, res) => {
       });
     }
 
+    console.log('🏢 Floor Incharge requesting data:', {
+      email: floorIncharge.email,
+      hostelBlock: floorIncharge.hostelBlock,
+      floor: floorIncharge.floor
+    });
+
     // Get floor incharge's floor(s) - handle both array and string
     const floors = Array.isArray(floorIncharge.floor) 
       ? floorIncharge.floor 
@@ -171,6 +177,19 @@ router.get('/dashboard/floor-incharge', auth, async (req, res) => {
     }).populate('studentId', 'name rollNumber email phoneNumber branch semester')
       .sort({ createdAt: -1 });
 
+    console.log(`📋 Found ${requests.length} home permission requests for floor incharge:`, {
+      hostelBlock: floorIncharge.hostelBlock,
+      floors,
+      requests: requests.map(r => ({
+        id: r._id,
+        currentLevel: r.currentLevel,
+        status: r.status,
+        category: r.category,
+        floorInchargeApproved: r.approvalFlags?.floorIncharge?.isApproved,
+        hostelInchargeApproved: r.approvalFlags?.hostelIncharge?.isApproved
+      }))
+    });
+
     const stats = {
       pending: requests.filter(r => r.currentLevel === 'floor-incharge' && r.status === 'pending').length,
       approved: requests.filter(r => r.approvalFlags?.floorIncharge?.isApproved).length,
@@ -178,6 +197,8 @@ router.get('/dashboard/floor-incharge', auth, async (req, res) => {
       totalRequests: requests.length,
       floorInchargeApproved: requests.filter(r => r.approvalFlags?.floorIncharge?.isApproved).length
     };
+
+    console.log('📊 Floor Incharge Home Permission Stats:', stats);
 
     res.json({
       success: true,
@@ -208,9 +229,23 @@ router.get('/dashboard/hostel-incharge', auth, async (req, res) => {
       });
     }
 
-    // Get requests for this hostel incharge's block
+    // Determine blocks in scope for this hostel incharge
+    const assignedBlocks = Array.isArray(hostelIncharge.assignedBlocks) && hostelIncharge.assignedBlocks.length > 0
+      ? hostelIncharge.assignedBlocks
+      : (hostelIncharge.assignedBlock ? [hostelIncharge.assignedBlock] : (hostelIncharge.hostelBlock ? [hostelIncharge.hostelBlock] : []));
+
+    // Handle naming variants (e.g., W-Block vs Womens-Block)
+    const blockVariants = assignedBlocks.flatMap(b => (b === 'W-Block' ? ['W-Block', 'Womens-Block'] : (b === 'Womens-Block' ? ['Womens-Block', 'W-Block'] : [b])));
+
+    console.log('🏢 Hostel Incharge requesting data:', {
+      email: hostelIncharge.email,
+      assignedBlocks,
+      blockVariants
+    });
+
+    // Get requests for this hostel incharge's block(s)
     const requests = await HomePermissionRequest.find({
-      hostelBlock: hostelIncharge.hostelBlock,
+      hostelBlock: { $in: blockVariants },
       $or: [
         { currentLevel: 'hostel-incharge' }, // Current requests at hostel incharge level
         { 'approvalFlow.approvedBy': hostelIncharge.email }, // Previously approved by this incharge
@@ -220,8 +255,22 @@ router.get('/dashboard/hostel-incharge', auth, async (req, res) => {
           status: 'pending'
         }
       ]
-    }).populate('studentId', 'name rollNumber email phoneNumber branch semester')
-      .sort({ createdAt: -1 });
+    })
+      .populate('studentId', 'name rollNumber email phoneNumber branch semester')
+      .sort({ createdAt: -1 })
+      .lean();
+
+    console.log(`📋 Found ${requests.length} home permission requests for hostel incharge:`, {
+      hostelBlock: hostelIncharge.hostelBlock,
+      requests: requests.map(r => ({
+        id: r._id,
+        currentLevel: r.currentLevel,
+        status: r.status,
+        category: r.category,
+        floorInchargeApproved: r.approvalFlags?.floorIncharge?.isApproved,
+        hostelInchargeApproved: r.approvalFlags?.hostelIncharge?.isApproved
+      }))
+    });
 
     const stats = {
       pending: requests.filter(r => r.currentLevel === 'hostel-incharge' && r.status === 'pending').length,
@@ -230,6 +279,8 @@ router.get('/dashboard/hostel-incharge', auth, async (req, res) => {
       totalRequests: requests.length,
       floorInchargeApproved: requests.filter(r => r.approvalFlags?.floorIncharge?.isApproved).length
     };
+
+    console.log('📊 Hostel Incharge Home Permission Stats:', stats);
 
     res.json({
       success: true,
@@ -347,8 +398,29 @@ router.post('/:requestId/approve', auth, async (req, res) => {
       remarks: remarks || ''
     });
 
+    // Explicitly mark approvalFlow as modified to ensure pre-save middleware is triggered
+    request.markModified('approvalFlow');
+
+    console.log('📝 Adding approval to flow:', {
+      requestId: request._id,
+      approvalEntry: {
+        ...approvalEntry,
+        timestamp: new Date(),
+        remarks: remarks || ''
+      },
+      currentLevel: request.currentLevel,
+      status: request.status
+    });
+
     // Save the request (pre-save middleware will handle status updates)
-    await request.save();
+    const savedRequest = await request.save();
+
+    console.log('💾 Request saved after approval:', {
+      requestId: savedRequest._id,
+      currentLevel: savedRequest.currentLevel,
+      status: savedRequest.status,
+      approvalFlags: savedRequest.approvalFlags
+    });
 
     // Send SMS to parent when floor incharge approves
     try {
@@ -494,6 +566,104 @@ router.post('/:requestId/approve', auth, async (req, res) => {
       message: 'Failed to approve home permission request',
       error: error.message
     });
+  }
+});
+
+// Support PATCH as alias for approval to match client code
+router.patch('/:requestId/approve', auth, async (req, res) => {
+  try {
+    const { requestId } = req.params;
+    const { approvalFlow, level, status, remarks } = req.body;
+
+    const request = await HomePermissionRequest.findById(requestId)
+      .populate('studentId', 'name rollNumber email phoneNumber branch semester');
+
+    if (!request) {
+      return res.status(404).json({ success: false, message: 'Home permission request not found' });
+    }
+
+    const currentUser = await User.findById(req.user.id);
+    if (!currentUser) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    if (!approvalFlow || !Array.isArray(approvalFlow) || approvalFlow.length === 0) {
+      return res.status(400).json({ success: false, message: 'Invalid approval flow data' });
+    }
+
+    const approvalEntry = approvalFlow[0];
+
+    try {
+      request.validateApprovalFlow(approvalEntry);
+    } catch (error) {
+      return res.status(400).json({ success: false, message: error.message, details: 'Approval validation failed' });
+    }
+
+    request.approvalFlow.push({ ...approvalEntry, timestamp: new Date(), remarks: remarks || '' });
+    request.markModified('approvalFlow');
+
+    console.log('📝 Adding approval to flow (PATCH):', { requestId: request._id, approvalEntry, currentLevel: request.currentLevel, status: request.status });
+
+    const savedRequest = await request.save();
+
+    try {
+      const smsResult = await sendFloorInchargeApprovalSMS(request, 'home-permission');
+      if (smsResult?.error) console.warn('Floor incharge approval SMS failed (home-permission):', smsResult.error);
+    } catch (smsError) {
+      console.error('Error sending floor incharge approval SMS (home-permission):', smsError.message);
+    }
+
+    if (request.status === 'approved' && request.currentLevel === 'completed') {
+      try {
+        const outgoingQrId = `home-out-${request._id}-${Date.now()}`;
+        const outgoingQRData = JSON.stringify({ requestId: request._id, studentId: request.studentId._id, type: 'home-permission-outgoing', validUntil: new Date(Date.now() + 24 * 60 * 60 * 1000), qrId: outgoingQrId });
+        const outgoingQRCode = await QRCode.toDataURL(outgoingQRData);
+
+        const incomingQrId = `home-in-${request._id}-${Date.now()}`;
+        const incomingQRData = JSON.stringify({ requestId: request._id, studentId: request.studentId._id, type: 'home-permission-incoming', validUntil: new Date(request.incomingDate.getTime() + 24 * 60 * 60 * 1000), qrId: incomingQrId });
+        const incomingQRCode = await QRCode.toDataURL(incomingQRData);
+
+        request.qrCode = {
+          outgoing: { data: outgoingQRCode, generatedAt: new Date(), validUntil: new Date(Date.now() + 24 * 60 * 60 * 1000), qrId: outgoingQrId },
+          incoming: { data: incomingQRCode, generatedAt: new Date(), validUntil: new Date(request.incomingDate.getTime() + 24 * 60 * 60 * 1000), qrId: incomingQrId, autoGeneratedAt: new Date() }
+        };
+        await request.save();
+      } catch (qrError) {
+        console.error('Error generating QR codes:', qrError);
+      }
+    }
+
+    try {
+      const Notification = require('../models/Notification');
+      let title, message;
+      if (request.status === 'approved' && request.currentLevel === 'completed') {
+        title = 'Home Permission Approved';
+        message = 'Your home permission request has been approved. QR codes have been generated successfully.';
+      } else {
+        title = 'Home Permission Updated';
+        message = `Your home permission request has been approved by ${currentUser.role.replace('-', ' ')} and moved to the next level.`;
+      }
+
+      const notification = new Notification({ userId: request.studentId._id, title, message, type: 'outingUpdate', referenceId: request._id, read: false });
+      await notification.save();
+      const socketIO = require('../config/socket');
+      if (socketIO.getIO()) {
+        socketIO.getIO().to(request.studentId._id.toString()).emit('notification', { id: notification._id, title, message, type: 'outingUpdate', createdAt: notification.createdAt });
+      }
+    } catch (notifError) {
+      console.error('Failed to create notification:', notifError);
+    }
+
+    const io = getIO();
+    if (io) {
+      io.emit('home-permission-approved', { requestId: request._id, studentName: request.studentId.name, currentLevel: request.currentLevel, status: request.status, approver: currentUser.name });
+    }
+
+    res.json({ success: true, message: 'Home permission request approved successfully', request });
+
+  } catch (error) {
+    console.error('Error approving home permission request (PATCH):', error);
+    res.status(500).json({ success: false, message: 'Failed to approve home permission request', error: error.message });
   }
 });
 
