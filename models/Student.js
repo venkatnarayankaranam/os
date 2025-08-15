@@ -13,6 +13,9 @@ const studentSchema = new mongoose.Schema({
   roomNumber: { type: String, required: true },
   branch: { type: String, default: 'Computer Science' },
   semester: { type: Number, default: 1 },
+  // New academic fields
+  year: { type: String, enum: ['1st', '2nd', '3rd', '4th'], default: '1st' },
+  status: { type: String, enum: ['Active', 'Graduated'], default: 'Active' },
   role: { type: String, default: 'student' },
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now }

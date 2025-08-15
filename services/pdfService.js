@@ -1,5 +1,34 @@
 const PDFDocument = require('pdfkit');
 
+// Helper function to format time properly
+const fmtTime = (d) => d ? new Date(d).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false }) : '—';
+
+// Helper function to handle text overflow and formatting
+const formatTextForColumn = (text, maxWidth, columnType = 'general') => {
+  if (!text) return 'N/A';
+  
+  const textStr = String(text);
+  
+  // For narrow columns, truncate with ellipsis
+  if (maxWidth < 50) {
+    if (textStr.length > 8) {
+      return textStr.substring(0, 6) + '...';
+    }
+    return textStr;
+  }
+  
+  // For medium columns, allow more text but still truncate if too long
+  if (maxWidth < 80) {
+    if (textStr.length > 15) {
+      return textStr.substring(0, 12) + '...';
+    }
+    return textStr;
+  }
+  
+  // For wide columns, allow full text but wrap if needed
+  return textStr;
+};
+
 // Original PDF generation function (keeping existing functionality)
 const generatePDF = (res, { title, requests, role, statistics, dateRange, isCustomReport = false, isStudentSpecific = false, reportType = 'outing' }) => {
   const doc = new PDFDocument({
@@ -324,21 +353,21 @@ const generateGateActivityPDF = async ({ activityLog, stats, startDate, endDate,
           const rowHeight = 18;
           const headerHeight = 22;
           
-          // Column layout exactly matching your screenshot
+          // Column layout exactly matching your screenshot with improved widths
           const columns = [
-            { x: tableStartX, width: 30, title: 'S.N', align: 'center' },
-            { x: tableStartX + 30, width: 85, title: 'Student Name', align: 'left' },
-            { x: tableStartX + 115, width: 65, title: 'Roll Number', align: 'left' },
-            { x: tableStartX + 180, width: 45, title: 'Block/ Room', align: 'center' },
-            { x: tableStartX + 225, width: 40, title: 'Branch', align: 'center' },
-            { x: tableStartX + 265, width: 45, title: 'Out Time', align: 'center' },
-            { x: tableStartX + 310, width: 45, title: 'Return Time', align: 'center' },
-            { x: tableStartX + 355, width: 75, title: 'Purpose', align: 'left' },
-            { x: tableStartX + 430, width: 35, title: 'Type', align: 'center' },
-            { x: tableStartX + 465, width: 65, title: 'Floor Incharge', align: 'left' },
-            { x: tableStartX + 530, width: 65, title: 'Hostel Incharge', align: 'left' },
-            { x: tableStartX + 595, width: 50, title: 'Status', align: 'center' },
-            { x: tableStartX + 645, width: 35, title: 'Alerts', align: 'center' }
+            { x: tableStartX, width: 35, title: 'S.N', align: 'center' },
+            { x: tableStartX + 35, width: 90, title: 'Student Name', align: 'left' },
+            { x: tableStartX + 125, width: 70, title: 'Roll Number', align: 'left' },
+            { x: tableStartX + 195, width: 50, title: 'Block/Room', align: 'center' },
+            { x: tableStartX + 245, width: 45, title: 'Branch', align: 'center' },
+            { x: tableStartX + 290, width: 50, title: 'Out Time', align: 'center' },
+            { x: tableStartX + 340, width: 50, title: 'Return Time', align: 'center' },
+            { x: tableStartX + 390, width: 80, title: 'Purpose', align: 'left' },
+            { x: tableStartX + 470, width: 40, title: 'Type', align: 'center' },
+            { x: tableStartX + 510, width: 70, title: 'Floor Incharge', align: 'left' },
+            { x: tableStartX + 580, width: 70, title: 'Hostel Incharge', align: 'left' },
+            { x: tableStartX + 650, width: 55, title: 'Status', align: 'center' },
+            { x: tableStartX + 705, width: 40, title: 'Alerts', align: 'center' }
           ];
 
           const totalTableWidth = columns.reduce((sum, col) => sum + col.width, 0);
@@ -377,24 +406,51 @@ const generateGateActivityPDF = async ({ activityLog, stats, startDate, endDate,
 
           currentY += headerHeight;
 
-          // Draw table data
+          // Draw table data (pair OUT/IN as sessions so Return Time is correct and blank when missing)
+          // Build sessions per student in chronological order
+          const sortedActivities = [...reqType.data].sort((a, b) => new Date(a.scannedAt) - new Date(b.scannedAt));
+          const sessions = [];
+          const trackers = new Map(); // studentId -> { lastOut: activity | null }
+
+          sortedActivities.forEach((act) => {
+            const studentId = act.student?._id?.toString() || act.studentId?._id?.toString() || 'unknown';
+            if (!trackers.has(studentId)) trackers.set(studentId, { lastOut: null });
+            const t = trackers.get(studentId);
+            const tType = (act.type || '').toLowerCase();
+
+            if (tType === 'out') {
+              if (t.lastOut) {
+                // Previous OUT without IN → push open session
+                sessions.push({ out: t.lastOut, in: null });
+              }
+              t.lastOut = act;
+            } else if (tType === 'in') {
+              if (t.lastOut) {
+                sessions.push({ out: t.lastOut, in: act });
+                t.lastOut = null;
+              } else {
+                // IN without prior OUT → still record session to show return time only
+                sessions.push({ out: null, in: act });
+              }
+            }
+          });
+          trackers.forEach((t) => { if (t.lastOut) sessions.push({ out: t.lastOut, in: null }); });
+
           doc.fontSize(7).font('Helvetica');
-          reqType.data.forEach((activity, index) => {
+          sessions.forEach((session, index) => {
             // Check if we need a new page
             if (currentY > 520) {
               doc.addPage();
               currentY = 50;
-              
+
               // Redraw header on new page
               doc.fillColor('#6366f1')
                  .rect(tableStartX, currentY, totalTableWidth, headerHeight)
                  .fill();
-              
               doc.strokeColor('#374151')
                  .lineWidth(1)
                  .rect(tableStartX, currentY, totalTableWidth, headerHeight)
                  .stroke();
-
               doc.fillColor('#ffffff');
               doc.fontSize(8).font('Helvetica-Bold');
               columns.forEach(column => {
@@ -403,7 +459,6 @@ const generateGateActivityPDF = async ({ activityLog, stats, startDate, endDate,
                   align: column.align
                 });
               });
-
               columns.forEach((column, colIndex) => {
                 if (colIndex < columns.length - 1) {
                   doc.strokeColor('#8b5cf6')
@@ -413,61 +468,63 @@ const generateGateActivityPDF = async ({ activityLog, stats, startDate, endDate,
                      .stroke();
                 }
               });
-
               currentY += headerHeight;
               doc.fontSize(7).font('Helvetica');
             }
 
-            // Draw row background (alternate colors)
+            // Row background
             doc.fillColor(index % 2 === 0 ? '#ffffff' : '#f8f9fa')
                .rect(tableStartX, currentY, totalTableWidth, rowHeight)
                .fill();
-
-            // Draw row border
+            // Row border
             doc.strokeColor('#e5e7eb')
                .lineWidth(0.5)
                .rect(tableStartX, currentY, totalTableWidth, rowHeight)
                .stroke();
 
-            // Format times based on activity type
-            const outTime = activity.type === 'OUT' || activity.type === 'out' 
-              ? new Date(activity.scannedAt).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false })
-              : '—';
-            
-            const returnTime = activity.type === 'IN' || activity.type === 'in'
-              ? new Date(activity.scannedAt).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false })
-              : '—';
+            const student = session.out?.student || session.in?.student || {};
+            const name = (student?.name || 'N/A');
+            const roll = student?.rollNumber || 'N/A';
+            const blockRoom = `${(student?.hostelBlock || 'N/A').replace('-Block', '')}/${student?.roomNumber || 'N/A'}`;
+            const branch = student?.branch || 'CSE';
 
-            // Determine request type and emergency status
-            const isEmergency = activity.isEmergency || activity.category === 'emergency';
+            const outTime = fmtTime(session.out?.scannedAt || null);
+            const returnTime = fmtTime(session.in?.scannedAt || null); // blank when no IN
+
+            const isEmergency = !!(session.out?.isEmergency || session.out?.category === 'emergency' || session.in?.isEmergency || session.in?.category === 'emergency');
             const typeText = reqType.type === 'home' ? 'HOME' : (isEmergency ? 'EMRG' : 'REG');
-            
-            // Status and alerts
-            const status = activity.status || 'APPROVE';
+
+            const purpose = (session.out?.purpose || session.in?.purpose || 'General Outing');
+            const status = (session.out?.status || session.in?.status || 'APPROVE').toUpperCase();
             const alertText = isEmergency ? '⚠️' : '—';
 
-            // Prepare row data exactly matching your screenshot
             const rowData = [
               { text: (index + 1).toString(), align: 'center' },
-              { text: (activity.student?.name || 'N/A').substring(0, 12), align: 'left' },
-              { text: activity.student?.rollNumber || 'N/A', align: 'left' },
-              { text: `${activity.student?.hostelBlock?.replace('-Block', '') || 'N/A'}/${activity.student?.roomNumber || 'N/A'}`, align: 'center' },
-              { text: activity.student?.branch || 'CSE', align: 'center' },
+              { text: name, align: 'left' },
+              { text: roll, align: 'left' },
+              { text: blockRoom, align: 'center' },
+              { text: branch, align: 'center' },
               { text: outTime, align: 'center' },
               { text: returnTime, align: 'center' },
-              { text: (activity.purpose || 'General Outing').substring(0, 10), align: 'left' },
+              { text: purpose, align: 'left' },
               { text: typeText, align: 'center' },
               { text: '—', align: 'left' }, // Floor Incharge
               { text: '—', align: 'left' }, // Hostel Incharge
-              { text: status.toUpperCase(), align: 'center' },
+              { text: status, align: 'center' },
               { text: alertText, align: 'center' }
             ];
 
-            // Draw row data
+            // Draw row data with improved text handling
             doc.fillColor('#000000');
             columns.forEach((column, colIndex) => {
-              doc.text(rowData[colIndex].text, column.x + 2, currentY + 5, {
-                width: column.width - 4,
+              const text = rowData[colIndex].text;
+              const maxWidth = column.width - 4;
+              
+              // Use helper function to format text properly
+              const displayText = formatTextForColumn(text, maxWidth, column.title.toLowerCase());
+              
+              doc.text(displayText, column.x + 2, currentY + 5, {
+                width: maxWidth,
                 align: column.align
               });
             });

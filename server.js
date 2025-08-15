@@ -141,8 +141,12 @@ app.use('/gate', gateRoutes);
 app.use('/disciplinary', disciplinaryRoutes);
 app.use('/students', studentsRoutes);
 app.use('/notifications', notificationRoutes);
+app.use('/api/admin', require('./routes/admin'));
+app.use('/api/admin', require('./routes/usersAdmin'));
+app.use('/api/hostelincharge', require('./routes/hostelIncharge'));
 
 app.use('/reports', reportRoutes);
+app.use('/reports', require('./routes/unifiedReports'));
 
 // Start QR scheduler for automatic incoming QR generation and midnight expiry
 const { startQRScheduler, startMidnightExpiryScheduler } = require('./services/qrScheduler');

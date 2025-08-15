@@ -92,6 +92,11 @@ const outingRequestSchema = new mongoose.Schema({
       role: String
     }
   }],
+  routedTo: {
+    // Info for routing based on semester-year mapping
+    floorInchargeEmail: { type: String },
+    year: { type: String }
+  },
   createdAt: {
     type: Date,
     default: Date.now,

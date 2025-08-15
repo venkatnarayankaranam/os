@@ -38,14 +38,37 @@ router.get('/floor-incharge/students/:email', auth, async (req, res) => {
       email: floorIncharge.email
     });
 
-    // Get all students under this floor incharge
-    const students = await Student.find({
-      hostelBlock: floorIncharge.hostelBlock,
-      floor: { $in: floors }
-    }).select('name email rollNumber hostelBlock floor roomNumber phoneNumber parentPhoneNumber branch semester')
+    // Get all students under this floor incharge - YEAR-BASED (ignore floor), filter by student's semester/year
+    // Derive year index from email like floorincharge1|2|3|4
+    const emailMatch = (floorIncharge.email || '').toLowerCase().match(/floorincharge(\d)\./);
+    const yearIndex = emailMatch ? Number(emailMatch[1]) : null;
+
+    // Map year index to allowed semesters
+    const semesterMap = {
+      1: [1, 2],
+      2: [3, 4],
+      3: [5, 6],
+      4: [7, 8]
+    };
+    const allowedSemesters = yearIndex ? semesterMap[yearIndex] : null;
+
+    // Support synonyms between W-Block and Womens-Block
+    const blockVariants = floorIncharge.hostelBlock === 'W-Block'
+      ? ['W-Block', 'Womens-Block']
+      : (floorIncharge.hostelBlock === 'Womens-Block' ? ['Womens-Block', 'W-Block'] : [floorIncharge.hostelBlock]);
+
+    const studentQuery = {
+      hostelBlock: { $in: blockVariants }
+    };
+    if (allowedSemesters && Array.isArray(allowedSemesters)) {
+      studentQuery.semester = { $in: allowedSemesters };
+    }
+
+    const students = await Student.find(studentQuery)
+      .select('name email rollNumber hostelBlock floor roomNumber phoneNumber parentPhoneNumber branch semester year')
       .sort({ floor: 1, roomNumber: 1 });
 
-    console.log(`Found ${students.length} students for block ${floorIncharge.hostelBlock} and floors ${floors.join(', ')}`);
+    console.log(`Found ${students.length} students for block ${floorIncharge.hostelBlock} and yearIndex ${yearIndex} (semesters ${allowedSemesters || 'all'})`);
 
     res.json({
       success: true,
@@ -69,84 +92,38 @@ router.get('/floor-incharge/students/:email', auth, async (req, res) => {
   }
 });
 
-// Get all outing requests for floor incharge (not just pending)
+// Get all outing requests for floor incharge (pending) routed by year/email mapping, not by floor
 router.get('/floor-incharge/requests', auth, checkRole(['floor-incharge']), async (req, res) => {
   try {
-    // Prefer assignedBlock/assignedFloor if present, else fallback to hostelBlock/floor for legacy users
+    const fiEmail = (req.user.email || '').toLowerCase();
     const assignedBlock = req.user.assignedBlock || req.user.hostelBlock;
-    const assignedFloorRaw = req.user.assignedFloor && req.user.assignedFloor.length > 0
-      ? req.user.assignedFloor
-      : (req.user.floor ? [req.user.floor] : []);
-    
-    console.log('Floor Incharge Request Query:', {
-      user: req.user,
-      assignedBlock,
-      assignedFloor: assignedFloorRaw
-    });
 
-    if (!assignedBlock || !assignedFloorRaw || assignedFloorRaw.length === 0) {
-      return res.status(400).json({
-        success: false,
-        message: 'Floor Incharge has no assigned block or floors',
-        debug: { assignedBlock, assignedFloor: assignedFloorRaw }
-      });
+    console.log('Floor Incharge Request Query (year-based):', { fiEmail, assignedBlock });
+
+    if (!fiEmail) {
+      return res.status(400).json({ success: false, message: 'Missing floor incharge email' });
     }
 
-    // Normalize possible floor representations
-    const normalizeFloor = (f) => {
-      if (!f) return f;
-      const s = String(f);
-      if (s === '1' || s === '1st' || s.includes('1st')) return '1st Floor';
-      if (s === '2' || s === '2nd' || s.includes('2nd')) return '2nd Floor';
-      if (s === '3' || s === '3rd' || s.includes('3rd')) return '3rd Floor';
-      if (s === '4' || s === '4th' || s.includes('4th')) return '4th Floor';
-      return s;
-    };
-    const floors = (Array.isArray(assignedFloorRaw) ? assignedFloorRaw : [assignedFloorRaw])
-      .filter(Boolean)
-      .map(normalizeFloor);
+    // Support synonyms between W-Block and Womens-Block if block is available
+    const blockVariants = assignedBlock === 'W-Block'
+      ? ['W-Block', 'Womens-Block']
+      : (assignedBlock === 'Womens-Block' ? ['Womens-Block', 'W-Block'] : (assignedBlock ? [assignedBlock] : []));
 
-    // Expand block synonyms (W-Block <-> Womens-Block)
-    const searchBlocks = (() => {
-      if (!assignedBlock) return [];
-      if (assignedBlock === 'W-Block') return ['W-Block', 'Womens-Block'];
-      if (assignedBlock === 'Womens-Block') return ['Womens-Block', 'W-Block'];
-      return [assignedBlock];
-    })();
-
-    const requests = await OutingRequest.find({
-      hostelBlock: { $in: searchBlocks },
-      floor: { $in: floors },
+    const query = {
       status: 'pending',
-      currentLevel: 'floor-incharge'
-    }).populate({
-      path: 'studentId',
-      select: 'name email rollNumber hostelBlock floor roomNumber phoneNumber parentPhoneNumber'
-    }).sort({ createdAt: -1 });
+      currentLevel: 'floor-incharge',
+      'routedTo.floorInchargeEmail': fiEmail
+    };
+    if (blockVariants.length) query.hostelBlock = { $in: blockVariants };
 
-    console.log(`Found ${requests.length} requests for ${assignedBlock}, floors: ${floors.join(', ')}`);
+    const requests = await OutingRequest.find(query)
+      .populate({ path: 'studentId', select: 'name email rollNumber hostelBlock floor roomNumber phoneNumber parentPhoneNumber semester' })
+      .sort({ createdAt: -1 });
 
     const stats = {
-      totalStudents: await Student.countDocuments({
-        hostelBlock: { $in: searchBlocks },
-        floor: { $in: floors }
-      }),
-      pending: await OutingRequest.countDocuments({
-        hostelBlock: { $in: searchBlocks },
-        floor: { $in: floors },
-        status: 'pending',
-        currentLevel: 'floor-incharge'
-      }),
-      approved: await OutingRequest.countDocuments({
-        hostelBlock: { $in: searchBlocks },
-        floor: { $in: floors },
-        status: 'approved'
-      }),
-      denied: await OutingRequest.countDocuments({
-        hostelBlock: { $in: searchBlocks },
-        floor: { $in: floors },
-        status: 'denied'
-      })
+      pending: await OutingRequest.countDocuments(query),
+      approved: await OutingRequest.countDocuments({ 'routedTo.floorInchargeEmail': fiEmail, status: 'approved', ...(blockVariants.length ? { hostelBlock: { $in: blockVariants } } : {}) }),
+      denied: await OutingRequest.countDocuments({ 'routedTo.floorInchargeEmail': fiEmail, status: 'denied', ...(blockVariants.length ? { hostelBlock: { $in: blockVariants } } : {}) })
     };
 
     res.json({
@@ -157,20 +134,12 @@ router.get('/floor-incharge/requests', auth, checkRole(['floor-incharge']), asyn
         studentEmail: req.studentId?.email
       })),
       stats,
-      debug: {
-        searchedFloors: floors,
-        hostelBlock: assignedBlock,
-        foundRequests: requests.length
-      }
+      debug: { query }
     });
 
   } catch (error) {
-    console.error('Error fetching requests:', error);
-    res.status(500).json({
-      success: false,
-      message: error.message,
-      debug: error.stack
-    });
+    console.error('Error fetching requests (year-based):', error);
+    res.status(500).json({ success: false, message: error.message, debug: error.stack });
   }
 });
 
@@ -459,10 +428,25 @@ router.patch('/floor-incharge/request/:requestId/:action', auth, checkRole(['flo
     // Emit socket event
     const io = req.app.get('socketio');
     if (io) {
-      io.emit('request-update', {
-        type: 'status-change',
-        request: savedRequest
-      });
+      // Emit to floor-incharge namespace with room targeting
+      const floorInchargeNamespace = io.of('/floor-incharge');
+      if (floorInchargeNamespace) {
+        const room = `${request.studentId.hostelBlock}-${request.studentId.floor}`;
+        floorInchargeNamespace.to(room).emit('outing-request-updated', {
+          type: 'status-change',
+          request: savedRequest,
+          action: action,
+          timestamp: new Date()
+        });
+        
+        // Also emit general update
+        floorInchargeNamespace.to(room).emit('request-update', {
+          type: 'status-change',
+          request: savedRequest,
+          action: action,
+          timestamp: new Date()
+        });
+      }
     }
 
     // Create notification for student on FI decision
@@ -521,6 +505,11 @@ router.post('/requests/submit', auth, checkRole(['student']), async (req, res) =
       });
     }
 
+    // Restrict graduated students
+    if (student.status === 'Graduated') {
+      return res.status(403).json({ success: false, message: 'Graduated students cannot create requests' });
+    }
+
     // Validate required fields
     const { outingDate, outTime, returnTime, purpose, parentContact, category = 'normal' } = req.body;
     
@@ -569,6 +558,10 @@ router.post('/requests/submit', auth, checkRole(['student']), async (req, res) =
         return s;
       };
 
+      // Semester -> Year mapping and routing info
+      const { mapSemesterToYearAndFloorEmail } = require('../utils/academic');
+      const mapping = mapSemesterToYearAndFloorEmail(student.semester, student.hostelBlock);
+
       const newRequest = new OutingRequest({
         studentId: student._id,
         outingDate: new Date(outingDate),
@@ -578,7 +571,11 @@ router.post('/requests/submit', auth, checkRole(['student']), async (req, res) =
         category: category,
         parentPhoneNumber: parentContact || student.parentPhoneNumber,
         hostelBlock: normalizeBlock(student.hostelBlock),
-        floor: normalizeFloor(student.floor)
+        floor: normalizeFloor(student.floor),
+        routedTo: {
+          floorInchargeEmail: mapping.floorInchargeEmail,
+          year: mapping.year
+        }
       });
 
       await newRequest.save();

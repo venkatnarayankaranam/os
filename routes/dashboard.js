@@ -31,6 +31,11 @@ router.get('/student/requests', auth, checkRole(['student']), async (req, res) =
       }
     ]);
 
+    // Attach student's current academic status for UI restrictions
+    const currentStudent = await require('../models/Student').findById(req.user.id).select('status semester');
+    const studentStatus = currentStudent?.status || 'Active';
+    const semester = currentStudent?.semester || null;
+
     console.log(`Found ${requests.length} requests for student ${req.user.id}`);
 
     // Compute robust completion state
@@ -78,7 +83,8 @@ router.get('/student/requests', auth, checkRole(['student']), async (req, res) =
         isCompleted: isRequestCompleted(req)
       })),
       stats,
-      notifications
+      notifications,
+      student: { status: studentStatus, semester }
     });
   } catch (error) {
     console.error('Error fetching student requests:', error);

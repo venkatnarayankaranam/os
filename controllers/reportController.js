@@ -1,6 +1,7 @@
 const PDFDocument = require('pdfkit');
 const OutingRequest = require('../models/OutingRequest');
 const { generatePDF } = require('../services/pdfService');
+const { generateUnifiedOutingHomePDF } = require('../services/unifiedPdfService');
 
 exports.generateReport = async (req, res) => {
   try {

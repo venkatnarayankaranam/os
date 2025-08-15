@@ -20,7 +20,7 @@ router.get('/blocks', auth, checkRole(['hostel-incharge', 'warden', 'admin']), a
 
     const students = await Student.find({
       hostelBlock: { $in: assignedBlocks }
-    }).select('name email rollNumber hostelBlock floor roomNumber phoneNumber parentPhoneNumber branch semester');
+    }).select('name email rollNumber hostelBlock floor roomNumber phoneNumber parentPhoneNumber branch semester year status');
 
     // Group by block
     const grouped = {};

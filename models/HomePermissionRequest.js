@@ -86,6 +86,10 @@ const homePermissionRequestSchema = new mongoose.Schema({
       role: String
     }
   }],
+  routedTo: {
+    floorInchargeEmail: { type: String },
+    year: { type: String }
+  },
   createdAt: {
     type: Date,
     default: Date.now,

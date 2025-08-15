@@ -34,6 +34,11 @@ router.post('/requests/submit', auth, async (req, res) => {
       });
     }
 
+    // Restrict graduated students
+    if (student.status === 'Graduated') {
+      return res.status(403).json({ success: false, message: 'Graduated students cannot create requests' });
+    }
+
     // Check if student has any active home permission requests
     const activeRequest = await HomePermissionRequest.findOne({
       studentId: req.user.id,
@@ -48,6 +53,18 @@ router.post('/requests/submit', auth, async (req, res) => {
       });
     }
 
+    // Semester -> Year mapping and routing info
+    const { mapSemesterToYearAndFloorEmail } = require('../utils/academic');
+    const mapping = mapSemesterToYearAndFloorEmail(student.semester, student.hostelBlock);
+
+    // Block graduated students from creating home requests
+    if (student.status === 'Graduated') {
+      return res.status(403).json({
+        success: false,
+        message: 'Graduated students cannot create requests'
+      });
+    }
+
     // Create new home permission request
     const homePermissionRequest = new HomePermissionRequest({
       studentId: req.user.id,
@@ -59,6 +76,10 @@ router.post('/requests/submit', auth, async (req, res) => {
       parentPhoneNumber: parentContact,
       hostelBlock: student.hostelBlock,
       floor: student.floor,
+      routedTo: {
+        floorInchargeEmail: mapping.floorInchargeEmail,
+        year: mapping.year
+      }
       // currentLevel will be set automatically by pre-save middleware based on category
     });
 
@@ -97,6 +118,17 @@ router.post('/requests/submit', auth, async (req, res) => {
       
       console.log('🏠 Emitting socket event:', socketData);
       io.emit('new-home-permission-request', socketData);
+      
+      // Also emit to floor-incharge namespace for real-time updates
+      const floorInchargeNamespace = io.of('/floor-incharge');
+      if (floorInchargeNamespace) {
+        const room = `${student.hostelBlock}-${student.floor}`;
+        floorInchargeNamespace.to(room).emit('home-permission-updated', {
+          type: 'new-request',
+          request: homePermissionRequest,
+          timestamp: new Date()
+        });
+      }
     }
 
     res.json({
@@ -256,7 +288,7 @@ router.get('/dashboard/hostel-incharge', auth, async (req, res) => {
         }
       ]
     })
-      .populate('studentId', 'name rollNumber email phoneNumber branch semester')
+      .populate('studentId', 'name rollNumber email phoneNumber parentPhoneNumber branch semester')
       .sort({ createdAt: -1 })
       .lean();
 
@@ -551,6 +583,18 @@ router.post('/:requestId/approve', auth, async (req, res) => {
         status: request.status,
         approver: currentUser.name
       });
+      
+      // Also emit to floor-incharge namespace for real-time updates
+      const floorInchargeNamespace = io.of('/floor-incharge');
+      if (floorInchargeNamespace) {
+        const room = `${request.studentId.hostelBlock}-${request.studentId.floor}`;
+        floorInchargeNamespace.to(room).emit('home-permission-updated', {
+          type: 'status-change',
+          request: request,
+          action: 'approved',
+          timestamp: new Date()
+        });
+      }
     }
 
     res.json({
