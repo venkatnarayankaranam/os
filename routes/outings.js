@@ -109,32 +109,67 @@ router.get('/floor-incharge/requests', auth, checkRole(['floor-incharge']), asyn
       ? ['W-Block', 'Womens-Block']
       : (assignedBlock === 'Womens-Block' ? ['Womens-Block', 'W-Block'] : (assignedBlock ? [assignedBlock] : []));
 
-    const query = {
-      status: 'pending',
-      currentLevel: 'floor-incharge',
+    // Get all requests (pending, approved, denied) that were routed to this floor incharge
+    const allRequestsQuery = {
       'routedTo.floorInchargeEmail': fiEmail
     };
-    if (blockVariants.length) query.hostelBlock = { $in: blockVariants };
+    if (blockVariants.length) allRequestsQuery.hostelBlock = { $in: blockVariants };
 
-    const requests = await OutingRequest.find(query)
+    const allRequests = await OutingRequest.find(allRequestsQuery)
       .populate({ path: 'studentId', select: 'name email rollNumber hostelBlock floor roomNumber phoneNumber parentPhoneNumber semester' })
       .sort({ createdAt: -1 });
 
+    // Filter pending requests (current level should be floor-incharge)
+    const pendingRequests = allRequests.filter(req => 
+      req.status === 'pending' && req.currentLevel === 'floor-incharge'
+    );
+
+    // Filter approved requests (should have floor incharge approval)
+    const approvedRequests = allRequests.filter(req => 
+      req.status === 'approved' || 
+      req.floorInchargeApproved === true ||
+      (req.approvalFlags?.floorIncharge?.isApproved && req.currentLevel !== 'floor-incharge')
+    );
+
+    // Filter denied requests
+    const deniedRequests = allRequests.filter(req => req.status === 'denied');
+
     const stats = {
-      pending: await OutingRequest.countDocuments(query),
-      approved: await OutingRequest.countDocuments({ 'routedTo.floorInchargeEmail': fiEmail, status: 'approved', ...(blockVariants.length ? { hostelBlock: { $in: blockVariants } } : {}) }),
-      denied: await OutingRequest.countDocuments({ 'routedTo.floorInchargeEmail': fiEmail, status: 'denied', ...(blockVariants.length ? { hostelBlock: { $in: blockVariants } } : {}) })
+      pending: pendingRequests.length,
+      approved: approvedRequests.length,
+      denied: deniedRequests.length
     };
 
+    console.log('📊 Floor Incharge Stats Calculation:', {
+      totalRequests: allRequests.length,
+      pendingRequests: pendingRequests.length,
+      approvedRequests: approvedRequests.length,
+      deniedRequests: deniedRequests.length,
+      stats,
+      sampleRequests: allRequests.slice(0, 3).map(req => ({
+        id: req._id,
+        status: req.status,
+        currentLevel: req.currentLevel,
+        approvalFlags: req.approvalFlags
+      }))
+    });
+
+    // Return all requests for the dashboard to handle filtering
     res.json({
       success: true,
-      requests: requests.map(req => ({
+      requests: allRequests.map(req => ({
         ...req.toObject(),
         studentName: req.studentId?.name,
         studentEmail: req.studentId?.email
       })),
       stats,
-      debug: { query }
+      debug: { 
+        query: allRequestsQuery,
+        totalRequests: allRequests.length,
+        pendingCount: pendingRequests.length,
+        approvedCount: approvedRequests.length,
+        deniedCount: deniedRequests.length
+      }
     });
 
   } catch (error) {
@@ -359,14 +394,43 @@ router.patch('/floor-incharge/request/:requestId/:action', auth, checkRole(['flo
     }
 
     // Validate request state
-    if (request.status !== 'pending' || request.currentLevel !== 'floor-incharge') {
+    if (request.status !== 'pending') {
       return res.status(400).json({
         success: false,
-        message: 'Invalid request state for approval',
-        currentStatus: request.status,
-        currentLevel: request.currentLevel
+        message: 'Request is not pending',
+        currentStatus: request.status
       });
     }
+
+    // Check if this request has already been approved by floor incharge
+    if (request.approvalFlags?.floorIncharge?.isApproved) {
+      return res.status(400).json({
+        success: false,
+        message: 'Request has already been approved by floor incharge',
+        currentStatus: request.status,
+        approvalFlags: request.approvalFlags
+      });
+    }
+
+    // Check if this request is at the floor-incharge level or has been routed to this floor incharge
+    const fiEmail = (req.user.email || '').toLowerCase();
+    if (request.currentLevel !== 'floor-incharge' && request.routedTo?.floorInchargeEmail !== fiEmail) {
+      return res.status(400).json({
+        success: false,
+        message: 'Request is not at floor-incharge level or not routed to you',
+        currentLevel: request.currentLevel,
+        routedTo: request.routedTo?.floorInchargeEmail,
+        yourEmail: fiEmail
+      });
+    }
+
+    console.log('📋 Request before update:', {
+      id: request._id,
+      status: request.status,
+      currentLevel: request.currentLevel,
+      approvalFlags: request.approvalFlags,
+      approvalFlow: request.approvalFlow?.length || 0
+    });
 
     // Update approval state
     request.approvalFlags.floorIncharge = {
@@ -374,6 +438,11 @@ router.patch('/floor-incharge/request/:requestId/:action', auth, checkRole(['flo
       timestamp: new Date(),
       remarks: comments
     };
+
+    // Set the floorInchargeApproved flag for tracking
+    if (action === 'approve') {
+      request.floorInchargeApproved = true;
+    }
 
     // Add to approval flow with proper level mapping
     request.approvalFlow.push({
@@ -409,12 +478,27 @@ router.patch('/floor-incharge/request/:requestId/:action', auth, checkRole(['flo
     });
 
     if (action === 'approve') {
-      // Let the pre-save middleware handle the level transition
-      // request.moveToNextLevel(); // Remove this line to let pre-save handle it
+      // For approval, let the pre-save middleware handle the level transition
+      // but ensure the status is set to approved if this is the final approval
+      if (request.category === 'emergency') {
+        // Emergency requests go directly to hostel incharge, so keep as pending
+        console.log('🚨 Emergency request approved - keeping status as pending for hostel incharge');
+      } else {
+        // Normal requests - status will be updated by pre-save middleware
+        console.log('📋 Normal request approved - pre-save middleware will handle status update');
+      }
     } else {
       request.status = 'denied';
       request.currentLevel = 'completed';
     }
+
+    console.log('📋 Request after update (before save):', {
+      id: request._id,
+      status: request.status,
+      currentLevel: request.currentLevel,
+      approvalFlags: request.approvalFlags,
+      approvalFlow: request.approvalFlow.length
+    });
 
     const savedRequest = await request.save();
 
@@ -422,31 +506,41 @@ router.patch('/floor-incharge/request/:requestId/:action', auth, checkRole(['flo
       requestId: savedRequest._id,
       currentLevel: savedRequest.currentLevel,
       status: savedRequest.status,
-      approvalFlags: savedRequest.approvalFlags
+      approvalFlags: savedRequest.approvalFlags,
+      approvalFlow: savedRequest.approvalFlow.length
     });
 
     // Emit socket event
-    const io = req.app.get('socketio');
-    if (io) {
-      // Emit to floor-incharge namespace with room targeting
-      const floorInchargeNamespace = io.of('/floor-incharge');
-      if (floorInchargeNamespace) {
-        const room = `${request.studentId.hostelBlock}-${request.studentId.floor}`;
-        floorInchargeNamespace.to(room).emit('outing-request-updated', {
-          type: 'status-change',
-          request: savedRequest,
-          action: action,
-          timestamp: new Date()
-        });
-        
-        // Also emit general update
-        floorInchargeNamespace.to(room).emit('request-update', {
-          type: 'status-change',
-          request: savedRequest,
-          action: action,
-          timestamp: new Date()
-        });
+    try {
+      const io = req.app.get('socketio');
+      if (io) {
+        // Emit to floor-incharge namespace with room targeting
+        const floorInchargeNamespace = io.of('/floor-incharge');
+        if (floorInchargeNamespace) {
+          const room = `${request.studentId.hostelBlock}-${request.studentId.floor}`;
+          floorInchargeNamespace.to(room).emit('outing-request-updated', {
+            type: 'status-change',
+            request: savedRequest,
+            action: action,
+            timestamp: new Date()
+          });
+          
+          // Also emit general update
+          floorInchargeNamespace.to(room).emit('request-update', {
+            type: 'status-change',
+            request: savedRequest,
+            action: action,
+            timestamp: new Date()
+          });
+          
+          console.log('📡 Socket events emitted to room:', room);
+        }
+      } else {
+        console.log('⚠️ Socket IO not available for emitting events');
       }
+    } catch (socketError) {
+      console.error('Socket emission error:', socketError);
+      // Don't fail the request if socket fails
     }
 
     // Create notification for student on FI decision

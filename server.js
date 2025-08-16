@@ -18,6 +18,9 @@ const allowedOrigins = [
 
 const io = socketConfig.init(server, allowedOrigins);
 
+// Make socket available to routes
+app.set('socketio', io);
+
 const connectWithRetry = (retries = 5, delay = 5000) => {
   if (!process.env.MONGODB_URI) {
     console.error('❌ MONGODB_URI is not defined in environment variables');

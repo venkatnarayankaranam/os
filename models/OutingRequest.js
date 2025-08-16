@@ -60,6 +60,11 @@ const outingRequestSchema = new mongoose.Schema({
     enum: ['floor-incharge', 'hostel-incharge', 'warden', 'completed']
     // Remove default value - pre-save middleware will handle this
   },
+  // Track if floor incharge has approved (for dashboard display)
+  floorInchargeApproved: {
+    type: Boolean,
+    default: false
+  },
   approvalFlags: {
     floorIncharge: {
       isApproved: { type: Boolean, default: false },
@@ -365,6 +370,9 @@ outingRequestSchema.pre('save', function(next) {
             this.approvalFlags.floorIncharge.remarks = latestApproval.remarks || '';
             if (this.currentLevel === 'floor-incharge') {
               this.currentLevel = 'hostel-incharge';
+              // For floor incharge approval, keep status as pending since it needs hostel incharge approval
+              // But we can add a flag to indicate floor incharge has approved
+              this.floorInchargeApproved = true;
               console.log('🔄 Updated outing currentLevel from floor-incharge to hostel-incharge for request:', this._id);
             }
             break;
